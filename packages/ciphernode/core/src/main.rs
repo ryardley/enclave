@@ -34,9 +34,8 @@ pub trait Save<T> {
 
 // NOTE THIS IS MOCK TO TALK CONCEPTUALLY ABOUT WHAT SHOULD BE HERE
 // Hypothetical core function depends on a save function that uses dependency injection
-// Now after writing this we know we need an async process that takes a Secret key and persists it some how.
-// Perhaps it makes sense that a std::collections::Map trait is passed in so we can store the data
-// by passing in a slate instance.
+// Now after writing this we know we need an async process that takes a Secret key and persists it
+// some how. This gives us our API. 
 pub async fn generate_and_save_key<R: RngCore + CryptoRng>(
     params: &std::sync::Arc<fhe::bfv::BfvParameters>, // pass in the params we use and gather from
                                                       // elsewhere
@@ -80,6 +79,7 @@ mod tests {
         Ok(())
     }
 
+    // Generate some params for test
     fn gen_params() -> Arc<BfvParameters> {
         let moduli: Vec<u64> = vec![0x3FFFFFFF000001];
         let num_votes: usize = 1000;
