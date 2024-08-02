@@ -1,30 +1,51 @@
-use async_trait::async_trait;
+//! # Enclave core
+//!
+//! Here we have the core functionality of an enclave node.
+//!
+//! - Enryption
+//! - Decryption
+//! - Key aggregation
+//! - Key storage
+//!
+//! We want to externalize infrastructure and deal with core computation here. Functions here make
+//! use of `impl Traits` and `Fn` lambdas to specify things that we need in order to manage our core
+//! functionality. They should be really easy to test.
+//!
+//! This code should read in a reasonably straight forward way but by writing it we will learn good
+//! shapes for our infastructure dependencies.
+//!
+//! This puts us in good stead for both changing our infrastructure as well as allowing us to be
+//! aware of what our nodes are doing.
+
+use std::future::Future;
 use fhe::bfv::SecretKey;
-use mockall::automock;
 use rand::{CryptoRng, RngCore};
 
 pub type Error = Box<dyn std::error::Error>;
 pub type Result<T> = std::result::Result<T, Error>;
 
-fn main() {
-    println!("Hello, cipher world!");
-}
 
-#[async_trait]
-#[automock]
-pub trait AsyncMap<T> {
-    async fn set(&self, key: &str, asset: T) -> Result<()>;
-    async fn get(&self, key: &str) -> T;
-}
-
-pub async fn generate_key<R: RngCore + CryptoRng>(
-    params: &std::sync::Arc<fhe::bfv::BfvParameters>,
-    keystore: &impl AsyncMap<SecretKey>,
-    rng: &mut R,
+// NOTE THIS IS MOCK TO TALK CONCEPTUALLY ABOUT WHAT SHOULD BE HERE
+// Hypothetical core function depends on a save function that uses dependency injection
+// Now after writing this we know we need an async process that takes a Secret key and persists it some how.
+// Perhaps it makes sense that a std::collections::Map trait is passed in so we can store the data
+// by passing in a slate instance. 
+pub async fn generate_and_save_key<
+    R: RngCore + CryptoRng,
+    F: FnOnce(SecretKey) -> Fut,
+    Fut: Future<Output = Result<()>>,
+>(
+    params: &std::sync::Arc<fhe::bfv::BfvParameters>, // pass in the params we use
+    save: F, // pass in the thing that saves an deserializes the key
+    rng: &mut R, // pass in an rng so we can test this function
 ) -> Result<()> {
     let sk_share: SecretKey = SecretKey::random(params, rng);
-    keystore.set("secret_key", sk_share).await?;
+    save(sk_share).await?;
     Ok(())
+}
+
+fn main() {
+    println!("Hello, cipher world!");
 }
 
 #[cfg(test)]
@@ -32,17 +53,41 @@ mod tests {
     pub type Error = Box<dyn std::error::Error>;
     pub type Result<T> = std::result::Result<T, Error>;
 
-    use std::future::Future;
-    use std::pin::Pin;
-    use std::sync::Arc;
-
-    use crate::{generate_key, MockAsyncMap};
+    use crate::*;
     use fhe::bfv::SecretKey;
     use fhe::bfv::{self, BfvParameters};
-    use mockall::predicate::{eq, function};
     use rand::SeedableRng;
     use rand_chacha::ChaCha8Rng;
+    use std::sync::Arc;
 
+    #[tokio::test]
+    async fn test_generate_key() -> Result<()> {
+        let mut rng = ChaCha8Rng::seed_from_u64(42);
+        let params = gen_params();
+        let expected_sk_share = SecretKey::random(&params, &mut ChaCha8Rng::seed_from_u64(42));
+
+        let mut results: Vec<SecretKey> = vec![];
+
+        generate_and_save_key(
+            &params,
+            |sk: SecretKey| async {
+                results.push(sk);
+                Ok(())
+            },
+            &mut rng,
+        )
+        .await?;
+
+        let first = results[0].clone();
+
+        assert!(results.len() == 1);
+        assert!(first.eq(&expected_sk_share));
+
+        Ok(())
+    }
+
+
+    
     fn gen_params() -> Arc<BfvParameters> {
         let moduli: Vec<u64> = vec![0x3FFFFFFF000001];
         let num_votes: usize = 1000;
@@ -68,35 +113,5 @@ mod tests {
             .build_arc()
             .unwrap()
     }
-    
-    fn async_ok_with<T>(value: T) -> Pin<Box<dyn Future<Output = Result<T>> + Send>>
-    where
-        T: Send + 'static,
-    {
-        Box::pin(async move { Ok(value) })
-    }
 
-    #[tokio::test]
-    async fn test_generate_key() -> Result<()> {
-        let mut rng = ChaCha8Rng::seed_from_u64(42);
-        let ks = &mut MockAsyncMap::new();
-        let params = gen_params();
-        let expected_sk_share = SecretKey::random(&params, &mut ChaCha8Rng::seed_from_u64(42));
-
-        ks.expect_set()
-            .with(
-                eq("secret_key"),
-                function(move |sk: &SecretKey| {
-                    let expected = expected_sk_share.clone();
-                    let is_eq = sk.eq(&expected);
-                    println!("iseq::{:?}", is_eq);
-                    return is_eq;
-                }),
-            )
-            .returning(|_, _| async_ok_with(()));
-
-        generate_key(&params, ks, &mut rng).await?;
-
-        Ok(())
-    }
 }
