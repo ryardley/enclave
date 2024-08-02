@@ -17,30 +17,34 @@
 //! This puts us in good stead for both changing our infrastructure as well as allowing us to be
 //! aware of what our nodes are doing.
 
-use std::future::Future;
+use async_trait::async_trait;
 use fhe::bfv::SecretKey;
+use mockall::automock;
 use rand::{CryptoRng, RngCore};
 
+// Some lose error/result stuff we can use
 pub type Error = Box<dyn std::error::Error>;
 pub type Result<T> = std::result::Result<T, Error>;
 
+#[async_trait]
+#[automock]
+pub trait Save<T> {
+    async fn save(&self, item: T) -> Result<()>;
+}
 
 // NOTE THIS IS MOCK TO TALK CONCEPTUALLY ABOUT WHAT SHOULD BE HERE
 // Hypothetical core function depends on a save function that uses dependency injection
 // Now after writing this we know we need an async process that takes a Secret key and persists it some how.
 // Perhaps it makes sense that a std::collections::Map trait is passed in so we can store the data
-// by passing in a slate instance. 
-pub async fn generate_and_save_key<
-    R: RngCore + CryptoRng,
-    F: FnOnce(SecretKey) -> Fut,
-    Fut: Future<Output = Result<()>>,
->(
-    params: &std::sync::Arc<fhe::bfv::BfvParameters>, // pass in the params we use
-    save: F, // pass in the thing that saves an deserializes the key
-    rng: &mut R, // pass in an rng so we can test this function
+// by passing in a slate instance.
+pub async fn generate_and_save_key<R: RngCore + CryptoRng>(
+    params: &std::sync::Arc<fhe::bfv::BfvParameters>, // pass in the params we use and gather from
+                                                      // elsewhere
+    db: &impl Save<SecretKey>, // pass in the thing that saves and deserializes the key
+    rng: &mut R,               // pass in an rng so we can test this function
 ) -> Result<()> {
     let sk_share: SecretKey = SecretKey::random(params, rng);
-    save(sk_share).await?;
+    db.save(sk_share).await?;
     Ok(())
 }
 
@@ -54,8 +58,8 @@ mod tests {
     pub type Result<T> = std::result::Result<T, Error>;
 
     use crate::*;
-    use fhe::bfv::SecretKey;
     use fhe::bfv::{self, BfvParameters};
+    use mockall::predicate::eq;
     use rand::SeedableRng;
     use rand_chacha::ChaCha8Rng;
     use std::sync::Arc;
@@ -66,28 +70,16 @@ mod tests {
         let params = gen_params();
         let expected_sk_share = SecretKey::random(&params, &mut ChaCha8Rng::seed_from_u64(42));
 
-        let mut results: Vec<SecretKey> = vec![];
+        let mut mock = MockSave::<SecretKey>::new();
+        mock.expect_save()
+            .with(eq(expected_sk_share))
+            .returning(|_| Box::pin(async { Ok(()) }));
 
-        generate_and_save_key(
-            &params,
-            |sk: SecretKey| async {
-                results.push(sk);
-                Ok(())
-            },
-            &mut rng,
-        )
-        .await?;
-
-        let first = results[0].clone();
-
-        assert!(results.len() == 1);
-        assert!(first.eq(&expected_sk_share));
+        generate_and_save_key(&params, &mock, &mut rng).await?;
 
         Ok(())
     }
 
-
-    
     fn gen_params() -> Arc<BfvParameters> {
         let moduli: Vec<u64> = vec![0x3FFFFFFF000001];
         let num_votes: usize = 1000;
@@ -113,5 +105,4 @@ mod tests {
             .build_arc()
             .unwrap()
     }
-
 }
